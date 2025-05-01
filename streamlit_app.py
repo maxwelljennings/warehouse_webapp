@@ -9,30 +9,21 @@ import traceback # Для отладки ошибок
 
 # --- Логика анализа ---
 
-# ИЗМЕНЕНО: Функция чтения локального layout.json
+# Функция чтения локального layout.json
 def read_layout_data() -> Optional[Dict]:
     """Читает файл layout.json, находящийся в том же каталоге."""
-    file_path = "layout.json" # Имя файла в репозитории
+    file_path = "layout.json"
     try:
-        # Проверяем, существует ли файл (важно для локального запуска/отладки)
         if not os.path.exists(file_path):
-             # В облаке Streamlit файл должен быть, если он в репо
              st.warning(f"Файл '{file_path}' не найден в репозитории. Используется пустая структура.")
-             # Возвращаем пустую структуру, чтобы приложение не падало
-             return {"Version": "1.0", "Layout": {}} 
-             # Или можно вернуть None и обрабатывать это дальше:
-             # st.error(f"Критическая ошибка: Файл '{file_path}' не найден в репозитории.")
-             # return None
-
-
+             return {"Version": "1.0", "Layout": {}}
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        # Валидация
         if not isinstance(data, dict) or "Layout" not in data or not isinstance(data.get("Layout"), dict):
              raise ValueError("Файл layout.json не содержит ожидаемую структуру JSON (отсутствует ключ 'Layout').")
         st.success("Файл структуры склада (layout.json) успешно загружен из репозитория.")
         return data
-    except FileNotFoundError: # Эта ошибка не должна возникать в облаке, если файл добавлен в репо
+    except FileNotFoundError:
         st.error(f"Файл layout.json не найден. Убедитесь, что он добавлен в репозиторий GitHub.")
         return None
     except json.JSONDecodeError as e:
@@ -43,7 +34,6 @@ def read_layout_data() -> Optional[Dict]:
         return None
     except Exception as e:
         st.error(f"Неожиданная ошибка при чтении файла layout.json: {e}")
-        # traceback.print_exc()
         return None
 
 # Функция чтения пустых локаций (без изменений)
@@ -140,7 +130,6 @@ def analyze_opportunities_internal(layout_data: Dict, empty_locations_set: Set[s
     st.write(f"(Analiza: Znaleziono {len(opportunities)} możliwości)")
     return opportunities
 
-
 # Функция форматирования результатов (без изменений)
 def format_analysis_results_simple(opportunities: List[Dict[str, Any]]) -> str:
     # ... (код функции format_analysis_results_simple остается таким же) ...
@@ -183,52 +172,43 @@ def format_analysis_results_simple(opportunities: List[Dict[str, Any]]) -> str:
     return "\n".join(output_lines)
 
 
-# --- Streamlit UI (Изменения) ---
+# --- Streamlit UI ---
 st.set_page_config(page_title="Wyszukiwarka Miejsc Magazynowych", layout="wide")
 st.title("Wyszukiwarka Wolnych Miejsc Magazynowych")
 
 st.sidebar.header("1. Załaduj plik")
 
-# УБРАН ЗАГРУЗЧИК ДЛЯ layout.json
-# uploaded_layout_file = st.sidebar.file_uploader(...)
-
-# Загрузчик для файла пустых локаций (остается)
 uploaded_empty_loc_file = st.sidebar.file_uploader(
     "Załaduj plik pustych lokalizacji (Excel/CSV)",
     type=["xlsx", "xls", "csv"]
 )
 
-st.sidebar.info("Plik struktury magazynu (layout.json) jest ładowany automatycznie z repozytorium.") # Добавлено инфо
+st.sidebar.info("Plik struktury magazynu (layout.json) jest ładowany automatycznie z repozytorium.")
 
 st.sidebar.header("2. Uruchom analizę")
-# ИЗМЕНЕНО: Кнопка активна только если загружен файл пустых локаций
 run_button = st.sidebar.button("Uruchom analizę", disabled=(not uploaded_empty_loc_file))
 
 st.header("Wyniki analizy")
 results_placeholder = st.empty()
-# ИЗМЕНЕНО: Обновлен текст-подсказка
 results_placeholder.info("Załaduj plik pustych lokalizacji i kliknij 'Uruchom analizę' w panelu bocznym.")
 
-# --- Логика выполнения при нажатии кнопки (Изменения) ---
+# --- Логика выполнения при нажатии кнопки (УБРАНЫ QApplication.processEvents) ---
 if run_button:
     results_placeholder.info("Wczytywanie struktury magazynu...")
-    QApplication.processEvents() # Даем интерфейсу обновиться
+    # QApplication.processEvents() # <--- УДАЛЕНО
 
-    # ИЗМЕНЕНО: Читаем локальный layout.json
     layout_data = read_layout_data()
 
-    # Проверяем результат чтения layout_data
     if layout_data is None:
          results_placeholder.error("Nie udało się wczytać pliku struktury magazynu (layout.json). Analiza przerwana.")
     else:
         results_placeholder.info("Przetwarzanie pliku pustych lokalizacji...")
-        QApplication.processEvents() # Даем интерфейсу обновиться
+        # QApplication.processEvents() # <--- УДАЛЕНО
         empty_locations = read_empty_locations_from_b3(uploaded_empty_loc_file)
 
-        # ИЗМЕНЕНО: Проверяем оба результата перед анализом
-        if empty_locations is not None: # layout_data уже проверен выше
+        if empty_locations is not None:
             results_placeholder.info("Wykonywanie analizy...")
-            QApplication.processEvents() # Даем интерфейсу обновиться
+            # QApplication.processEvents() # <--- УДАЛЕНО
             try:
                 opportunities = analyze_opportunities_internal(layout_data, empty_locations)
                 results_text = format_analysis_results_simple(opportunities)
@@ -254,5 +234,4 @@ if run_button:
                 # traceback.print_exc()
 
         else:
-            # Ошибка чтения файла пустых локаций уже выведена
             results_placeholder.warning("Analiza nie może zostać wykonana z powodu błędów odczytu pliku pustych lokalizacji.")
