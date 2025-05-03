@@ -11,29 +11,30 @@ import traceback # Для отладки ошибок
 
 # Функция чтения локального layout.json
 def read_layout_data() -> Optional[Dict]:
-    """Читает файл layout.json, находящийся в том же каталоге."""
+    """Czyta plik layout.json z repozytorium."""
     file_path = "layout.json"
     try:
         if not os.path.exists(file_path):
-             st.warning(f"Файл '{file_path}' не найден в репозитории. Используется пустая структура.")
+             st.warning(f"Plik '{file_path}' nie znaleziony. Używana jest pusta struktura.")
              return {"Version": "1.0", "Layout": {}}
         with open(file_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
         if not isinstance(data, dict) or "Layout" not in data or not isinstance(data.get("Layout"), dict):
-             raise ValueError("Файл layout.json не содержит ожидаемую структуру JSON (отсутствует ключ 'Layout').")
-        st.success("Файл структуры склада (layout.json) успешно загружен из репозитория.")
+             raise ValueError("Plik layout.json nie zawiera oczekiwanej struktury JSON.")
+        # Убираем сообщение об успехе загрузки layout, т.к. это происходит автоматически
+        # st.success("Plik struktury magazynu (layout.json) pomyślnie załadowany z repozytorium.")
         return data
     except FileNotFoundError:
-        st.error(f"Файл layout.json не найден. Убедитесь, что он добавлен в репозиторий GitHub.")
+        st.error(f"Plik layout.json nie znaleziony. Upewnij się, że jest w repozytorium GitHub.")
         return None
     except json.JSONDecodeError as e:
-        st.error(f"Ошибка парсинга файла layout.json: {e}")
+        st.error(f"Błąd parsowania pliku layout.json: {e}")
         return None
     except ValueError as e:
-        st.error(f"Ошибка валидации структуры файла layout.json: {e}")
+        st.error(f"Błąd walidacji struktury pliku layout.json: {e}")
         return None
     except Exception as e:
-        st.error(f"Неожиданная ошибка при чтении файла layout.json: {e}")
+        st.error(f"Nieoczekiwany błąd podczas odczytu pliku layout.json: {e}")
         return None
 
 # Функция чтения пустых локаций (без изменений)
@@ -110,15 +111,18 @@ def analyze_opportunities_internal(layout_data: Dict, empty_locations_set: Set[s
                     if section_id:
                         if not sections_data[section_id]["capacity"]: sections_data[section_id]["capacity"] = section_capacity
                         sections_data[section_id]["locations"].append(location_details)
-                    else:
-                         if is_accessible and not is_corridor and is_empty: opportunities.append({"OpportunityType": "Standard", "PrimaryLocation": location_id, "SecondaryLocation": "", "SectionID": "", "Notes": ""})
-    st.write(f"(Analiza: Przetworzono {processed_locations_count} lokalizacji, {len(sections_data)} sekcji)")
+                    # Убираем проверку на Standard здесь, т.к. она не нужна для вывода
+                    # else:
+                    #      if is_accessible and not is_corridor and is_empty: opportunities.append({"OpportunityType": "Standard", "PrimaryLocation": location_id, "SecondaryLocation": "", "SectionID": "", "Notes": ""})
+    # Убираем вывод о количестве обработанных локаций/секций из лога Streamlit
+    # st.write(f"(Analiza: Przetworzono {processed_locations_count} lokalizacji, {len(sections_data)} sekcji)")
     for section_id, section_info in sections_data.items():
         locations_in_section = sorted(section_info["locations"], key=lambda x: x["position"])
         capacity = section_info["capacity"]
         loc_by_pos = {loc["position"]: loc for loc in locations_in_section}
-        for loc in locations_in_section:
-            if loc["is_accessible"] and not loc["is_corridor"] and loc["is_empty"]: opportunities.append({"OpportunityType": "Standard", "PrimaryLocation": loc["id"], "SecondaryLocation": "", "SectionID": section_id, "Notes": ""})
+        # Убираем добавление Standard возможностей
+        # for loc in locations_in_section:
+        #     if loc["is_accessible"] and not loc["is_corridor"] and loc["is_empty"]: opportunities.append({"OpportunityType": "Standard", "PrimaryLocation": loc["id"], "SecondaryLocation": "", "SectionID": section_id, "Notes": ""})
         if capacity == 2:
             loc1 = loc_by_pos.get(1); loc2 = loc_by_pos.get(2)
             if (loc1 and loc1["is_accessible"] and not loc1["is_corridor"] and loc1["is_empty"] and loc2 and loc2["is_accessible"] and not loc2["is_corridor"] and loc2["is_empty"]): opportunities.append({"OpportunityType": "NonStandard_Direct", "PrimaryLocation": loc1["id"], "SecondaryLocation": loc2["id"], "SectionID": section_id, "Notes": ""})
@@ -126,55 +130,71 @@ def analyze_opportunities_internal(layout_data: Dict, empty_locations_set: Set[s
             loc1 = loc_by_pos.get(1); loc2 = loc_by_pos.get(2); loc3 = loc_by_pos.get(3)
             if (loc1 and loc1["is_accessible"] and not loc1["is_corridor"] and loc1["is_empty"] and loc2 and loc2["is_accessible"] and not loc2["is_corridor"] and loc2["is_empty"]): opportunities.append({"OpportunityType": "NonStandard_Direct", "PrimaryLocation": loc1["id"], "SecondaryLocation": loc2["id"], "SectionID": section_id, "Notes": ""})
             if (loc2 and loc2["is_accessible"] and not loc2["is_corridor"] and loc2["is_empty"] and loc3 and loc3["is_accessible"] and not loc3["is_corridor"] and loc3["is_empty"]): opportunities.append({"OpportunityType": "NonStandard_Direct", "PrimaryLocation": loc2["id"], "SecondaryLocation": loc3["id"], "SectionID": section_id, "Notes": ""})
-            if (loc1 and loc1["is_accessible"] and not loc1["is_corridor"] and loc1["is_empty"] and loc3 and loc3["is_accessible"] and not loc3["is_corridor"] and loc3["is_empty"] and loc2 and loc2["is_accessible"] and not loc2["is_corridor"] and not loc2["is_empty"]): opportunities.append({"OpportunityType": "NonStandard_MoveRequired", "PrimaryLocation": loc1["id"], "SecondaryLocation": loc3["id"], "SectionID": section_id, "Notes": f"Требуется перемещение палеты из {loc2['id']}"})
-    st.write(f"(Analiza: Znaleziono {len(opportunities)} możliwości)")
+            if (loc1 and loc1["is_accessible"] and not loc1["is_corridor"] and loc1["is_empty"] and loc3 and loc3["is_accessible"] and not loc3["is_corridor"] and loc3["is_empty"] and loc2 and loc2["is_accessible"] and not loc2["is_corridor"] and not loc2["is_empty"]): opportunities.append({"OpportunityType": "NonStandard_MoveRequired", "PrimaryLocation": loc1["id"], "SecondaryLocation": loc3["id"], "SectionID": section_id, "Notes": f"Требуется перемещение палеты из {loc2['id']}"}) # Примечание оставляем, оно используется ниже
+    # Убираем вывод о количестве найденных возможностей из лога Streamlit
+    # st.write(f"(Analiza: Znaleziono {len(opportunities)} możliwości)")
     return opportunities
 
-# Функция форматирования результатов (без изменений)
+
+# ИЗМЕНЕНО: Функция форматирования ТОЛЬКО для нестандартных палет
 def format_analysis_results_simple(opportunities: List[Dict[str, Any]]) -> str:
-    # ... (код функции format_analysis_results_simple остается таким же) ...
-    if not opportunities: return "Nie znaleziono wolnych miejsc do umieszczenia palet."
-    standard_locations = []; non_standard_direct = []; non_standard_move = []
-    direct_pairs_locations = set(); move_pairs_locations = set()
+    """Formatuje wyniki analizy tylko dla palet niestandardowych."""
+
+    non_standard_direct = []
+    non_standard_move = []
+
+    # Собираем только нужные типы
     for opp in opportunities:
-        if opp.get("OpportunityType") == "NonStandard_Direct":
-            loc1 = opp.get("PrimaryLocation", ""); loc2 = opp.get("SecondaryLocation", "")
-            direct_pairs_locations.add(loc1); direct_pairs_locations.add(loc2)
-            non_standard_direct.append((loc1, loc2))
-    for opp in opportunities:
-         if opp.get("OpportunityType") == "NonStandard_MoveRequired":
-              loc1 = opp.get("PrimaryLocation", ""); loc3 = opp.get("SecondaryLocation", ""); notes = opp.get("Notes", "")
-              move_pairs_locations.add(loc1); move_pairs_locations.add(loc3); move_note = ""
-              if "Требуется перемещение палеты из " in notes: move_loc = notes.replace("Требуется перемещение палеты из ", "").strip(); move_note = f"(Należy przesunąć paletę z {move_loc})"
-              non_standard_move.append((loc1, loc3, move_note))
-    for opp in opportunities:
-        if opp.get("OpportunityType") == "Standard":
+        opp_type = opp.get("OpportunityType")
+        if opp_type == "NonStandard_Direct":
+            non_standard_direct.append((opp.get("PrimaryLocation", ""), opp.get("SecondaryLocation", "")))
+        elif opp_type == "NonStandard_MoveRequired":
             loc1 = opp.get("PrimaryLocation", "")
-            if loc1 not in direct_pairs_locations and loc1 not in move_pairs_locations: standard_locations.append(loc1)
-    output_lines = []; output_lines.append("--- Dostępne miejsca ---"); output_lines.append("")
-    if standard_locations:
-        output_lines.append("STANDARDOWE palety można umieścić tutaj:"); standard_locations.sort(); line = []
-        for i, loc in enumerate(standard_locations):
-            line.append(loc)
-            if (i + 1) % 5 == 0 or i == len(standard_locations) - 1: output_lines.append("  " + ", ".join(line)); line = []
-        output_lines.append("")
-    else: output_lines.append("Brak wolnych miejsc dla STANDARDOWYCH palet."); output_lines.append("")
+            loc3 = opp.get("SecondaryLocation", "") # Это loc3 из анализа
+            notes = opp.get("Notes", "")
+            move_note = ""
+            # Переводим примечание
+            if "Требуется перемещение палеты из " in notes:
+                move_loc = notes.replace("Требуется перемещение палеты из ", "").strip()
+                move_note = f"(Przesuń paletę z {move_loc})" # Польский перевод
+            non_standard_move.append((loc1, loc3, move_note))
+
+    # Если нет ни одного из нужных типов
+    if not non_standard_direct and not non_standard_move:
+        return "Nie znaleziono obecnie miejsc dla palet niestandardowych."
+
+    # Формируем итоговый текст
+    output_lines = []
+    output_lines.append("--- Miejsca dla palet NIESTANDARDOWYCH (na 2 miejsca) ---")
+    output_lines.append("")
+
     if non_standard_direct:
-        output_lines.append("NIESTANDARDOWE palety (na 2 miejsca) można umieścić tutaj:"); non_standard_direct.sort(key=lambda x: x[0])
-        for loc1, loc2 in non_standard_direct: output_lines.append(f"  - {loc1} i {loc2}")
+        output_lines.append("Można postawić OD RAZU w:")
+        non_standard_direct.sort(key=lambda x: x[0]) # Сортируем
+        for loc1, loc2 in non_standard_direct:
+            output_lines.append(f"  - Lokalizacje: {loc1} i {loc2}")
+        output_lines.append("") # Пустая строка после списка
+    else:
+        output_lines.append("Brak wolnych par miejsc, gdzie można postawić paletę od razu.")
         output_lines.append("")
-    else: output_lines.append("Brak wolnych par miejsc dla NIESTANDARDOWYCH palet."); output_lines.append("")
+
     if non_standard_move:
-        output_lines.append("NIESTANDARDOWE palety (na 2 miejsca) można umieścić, JEŚLI PRZESUNIESZ:"); non_standard_move.sort(key=lambda x: x[0])
-        for loc1, loc3, move_note in non_standard_move: output_lines.append(f"  - {loc1} i {loc3} {move_note}")
-        output_lines.append("")
-    output_lines.append("------------------------------------")
+        output_lines.append("Można postawić PO PRZESUNIĘCIU palety:")
+        non_standard_move.sort(key=lambda x: x[0]) # Сортируем
+        for loc1, loc3, move_note in non_standard_move:
+            output_lines.append(f"  - Z: {loc1} i {loc3}  {move_note}") # Добавляем примечание
+        output_lines.append("") # Пустая строка после списка
+    else:
+        # Не пишем ничего, если таких нет
+        pass
+
+    output_lines.append("-------------------------------------------------------")
     return "\n".join(output_lines)
 
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="Wyszukiwarka Miejsc Magazynowych", layout="wide")
-st.title("Wyszukiwarka Wolnych Miejsc Magazynowych")
+st.title("Wyszukiwarka Wolnych Miejsc dla Palet Niestandardowych") # Обновлено название
 
 st.sidebar.header("1. Załaduj plik")
 
@@ -183,55 +203,75 @@ uploaded_empty_loc_file = st.sidebar.file_uploader(
     type=["xlsx", "xls", "csv"]
 )
 
-st.sidebar.info("Plik struktury magazynu (layout.json) jest ładowany automatycznie z repozytorium.")
+st.sidebar.info("Plik struktury magazynu (layout.json) jest ładowany automatycznie.")
 
 st.sidebar.header("2. Uruchom analizę")
 run_button = st.sidebar.button("Uruchom analizę", disabled=(not uploaded_empty_loc_file))
 
 st.header("Wyniki analizy")
 results_placeholder = st.empty()
-results_placeholder.info("Załaduj plik pustych lokalizacji i kliknij 'Uruchom analizę' w panelu bocznym.")
+results_placeholder.info("Załaduj plik pustych lokalizacji i kliknij 'Uruchom analizę'.")
 
-# --- Логика выполнения при нажатии кнопки (УБРАНЫ QApplication.processEvents) ---
+# --- Логика выполнения при нажатии кнопки ---
+analysis_results_text = "" # Переменная для хранения текста для печати
+
 if run_button:
     results_placeholder.info("Wczytywanie struktury magazynu...")
-    # QApplication.processEvents() # <--- УДАЛЕНО
-
     layout_data = read_layout_data()
 
     if layout_data is None:
-         results_placeholder.error("Nie udało się wczytać pliku struktury magazynu (layout.json). Analiza przerwana.")
+         results_placeholder.error("Nie udało się wczytać pliku struktury magazynu (layout.json).")
     else:
         results_placeholder.info("Przetwarzanie pliku pustych lokalizacji...")
-        # QApplication.processEvents() # <--- УДАЛЕНО
         empty_locations = read_empty_locations_from_b3(uploaded_empty_loc_file)
 
         if empty_locations is not None:
             results_placeholder.info("Wykonywanie analizy...")
-            # QApplication.processEvents() # <--- УДАЛЕНО
             try:
                 opportunities = analyze_opportunities_internal(layout_data, empty_locations)
-                results_text = format_analysis_results_simple(opportunities)
-                results_placeholder.text_area("Wyniki:", value=results_text, height=500)
+                # ИЗМЕНЕНО: Сохраняем результат форматирования
+                analysis_results_text = format_analysis_results_simple(opportunities)
+                results_placeholder.text_area("Wyniki:", value=analysis_results_text, height=400) # Уменьшил высоту
 
-                if opportunities:
-                     df_report = pd.DataFrame(opportunities)
-                     df_report = df_report[["OpportunityType", "PrimaryLocation", "SecondaryLocation", "SectionID", "Notes"]]
-                     output_excel = io.BytesIO()
-                     with pd.ExcelWriter(output_excel, engine='openpyxl') as writer:
-                          df_report.to_excel(writer, index=False, sheet_name='Opportunities')
-                     excel_data = output_excel.getvalue()
-                     st.sidebar.download_button(
-                          label="Pobierz pełny raport (Excel)",
-                          data=excel_data,
-                          file_name="raport_analizy.xlsx",
-                          mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                     )
+                # УБРАНА КНОПКА СКАЧИВАНИЯ EXCEL
+                # if opportunities: ... st.sidebar.download_button(...)
 
             except Exception as e:
                 st.error(f"Błąd podczas wykonywania analizy: {e}")
                 results_placeholder.error(f"Wystąpił błąd podczas analizy. Szczegóły: {e}")
-                # traceback.print_exc()
+                analysis_results_text = "" # Очищаем текст при ошибке
 
         else:
-            results_placeholder.warning("Analiza nie może zostać wykonana z powodu błędów odczytu pliku pustych lokalizacji.")
+            results_placeholder.warning("Analiza nie może zostać wykonana (błąd odczytu pliku pustych lokalizacji).")
+            analysis_results_text = "" # Очищаем текст при ошибке
+
+# --- Кнопка Печати ---
+# Показываем кнопку только если есть результаты для печати
+if analysis_results_text and "Nie znaleziono obecnie miejsc" not in analysis_results_text:
+    st.sidebar.header("3. Drukuj")
+    # Используем HTML и JavaScript для создания кнопки печати
+    print_button_html = """
+    <style>
+    .print-button {
+        display: inline-block;
+        padding: 0.5em 1em;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        background-color: #f0f0f0;
+        color: #333;
+        text-align: center;
+        text-decoration: none;
+        cursor: pointer;
+        font-size: 1em; /* Размер шрифта как у обычного текста */
+        font-family: inherit; /* Шрифт как у остального интерфейса */
+    }
+    .print-button:hover {
+        background-color: #e0e0e0;
+    }
+    .print-button:active {
+        background-color: #d0d0d0;
+    }
+    </style>
+    <button class="print-button" onclick="window.print()">Drukuj wyniki</button>
+    """
+    st.sidebar.markdown(print_button_html, unsafe_allow_html=True)
