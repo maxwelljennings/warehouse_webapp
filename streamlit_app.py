@@ -160,45 +160,32 @@ def analyze_opportunities_internal(layout_data: Dict, empty_locations_set: Set[s
     return opportunities
 
 
-# ИЗМЕНЕНО: Новая функция форматирования с визуализацией
+# ИЗМЕНЕНО: Poprawiona funkcja formatowania z prawidłowym tekstem
 def format_analysis_results_visual(opportunities: List[Dict[str, Any]]) -> str:
     """Formatuje wyniki analizy w sposób wizualny, pogrupowane według hali."""
 
-    # Grupujemy możliwości według hali
     opportunities_by_hall = defaultdict(lambda: {"direct": [], "move": []})
     for opp in opportunities:
         hall = opp.get("Hall", "Nieznana Hala")
         opp_type = opp.get("OpportunityType")
         locations = opp.get("Locations", [])
         notes = opp.get("Notes", "")
-        pair = opp.get("Pair") # Dla NonStandard_Direct w sekcji 3
-        occupied_pos = opp.get("OccupiedPos") # Dla NonStandard_MoveRequired
+        pair = opp.get("Pair")
+        occupied_pos = opp.get("OccupiedPos")
 
-        # Sortujemy lokalizacje wewnątrz sekcji dla pewności
         locations.sort(key=lambda x: x.get("position", 0))
 
         if opp_type == "NonStandard_Direct":
-            opportunities_by_hall[hall]["direct"].append({
-                "locations": locations,
-                "pair": pair # Przekazujemy parę
-            })
+            opportunities_by_hall[hall]["direct"].append({"locations": locations, "pair": pair})
         elif opp_type == "NonStandard_Direct_3_Full":
-             opportunities_by_hall[hall]["direct"].append({
-                "locations": locations,
-                "pair": (1, 3) # Specjalny znacznik dla pełnej sekcji 3
-             })
+             opportunities_by_hall[hall]["direct"].append({"locations": locations, "pair": (1, 3)})
         elif opp_type == "NonStandard_MoveRequired":
-            opportunities_by_hall[hall]["move"].append({
-                "locations": locations,
-                "occupied_pos": occupied_pos,
-                "notes": notes
-            })
+            opportunities_by_hall[hall]["move"].append({"locations": locations, "occupied_pos": occupied_pos, "notes": notes})
 
     if not opportunities_by_hall:
         return "Nie znaleziono obecnie miejsc dla palet niestandardowych."
 
     output_lines = []
-    # Sortujemy hale alfabetycznie
     sorted_halls = sorted(opportunities_by_hall.keys())
 
     for hall in sorted_halls:
@@ -206,63 +193,68 @@ def format_analysis_results_visual(opportunities: List[Dict[str, Any]]) -> str:
         direct_ops = hall_data["direct"]
         move_ops = hall_data["move"]
 
-        # Pomijamy halę, jeśli nie ma w niej żadnych możliwości
-        if not direct_ops and not move_ops:
-            continue
+        if not direct_ops and not move_ops: continue
 
-        output_lines.append("") # Pusta linia przed nową halą
+        output_lines.append("")
         output_lines.append(f"--- SALA: {hall} ---")
-        output_lines.append("-" * (len(hall) + 10)) # Linia podkreślająca
+        output_lines.append("-" * (len(hall) + 10))
 
         if direct_ops:
             output_lines.append("\n**Miejsca GOTOWE na paletę niestandardową:**")
-            # Sortujemy możliwości wewnątrz hali (np. po pierwszej lokalizacji)
             direct_ops.sort(key=lambda x: x["locations"][0].get("id", ""))
             for op in direct_ops:
                 locs = op["locations"]
                 pair = op.get("pair")
                 loc_ids = [l.get('id', '???') for l in locs]
+                result_text = "" # Tekst opisujący wynik
 
-                if len(locs) == 2: # Sekcja 2-miejscowa
-                    # [ LOK1 | LOK2 ] -> 1x Paleta Niestandardowa
+                if len(locs) == 2:
                     vis = f"[{loc_ids[0]:<12} | {loc_ids[1]:<12}]"
-                    output_lines.append(f"{vis}  ->  1x Paleta Niestandardowa")
-                elif len(locs) == 3: # Sekcja 3-miejscowa
+                    result_text = "-> 1x Paleta Niestandardowa" # Poprawiony tekst
+                elif len(locs) == 3:
                     if pair == (1, 3): # Wszystkie 3 wolne
-                         # [ LOK1 | LOK2 | LOK3 ] -> 2x Paleta Niestandardowa
                          vis = f"[{loc_ids[0]:<12} | {loc_ids[1]:<12} | {loc_ids[2]:<12}]"
-                         output_lines.append(f"{vis}  ->  **2x Paleta Niestandardowa**")
-                    elif pair == (1, 2): # Wolna para 1-2
-                         # [ LOK1 | LOK2 | .... ] -> 1x Paleta Niestandardowa (na L1-L2)
-                         vis = f"[{loc_ids[0]:<12} | {loc_ids[1]:<12} | {' ' * 12}]" # Puste miejsce dla L3
-                         output_lines.append(f"{vis}  ->  1x Paleta Niestandardowa (na {loc_ids[0]}-{loc_ids[1]})")
-                    elif pair == (2, 3): # Wolna para 2-3
-                         # [ .... | LOK2 | LOK3 ] -> 1x Paleta Niestandardowa (na L2-L3)
-                         vis = f"[{' ' * 12} | {loc_ids[1]:<12} | {loc_ids[2]:<12}]" # Puste miejsce dla L1
-                         output_lines.append(f"{vis}  ->  1x Paleta Niestandardowa (na {loc_ids[1]}-{loc_ids[2]})")
-            output_lines.append("") # Pusta linia po sekcji
+                         result_text = "-> **2x Paleta Niestandardowa**" # Poprawiony tekst
+                    elif pair == (1, 2):
+                         vis = f"[{loc_ids[0]:<12} | {loc_ids[1]:<12} | {' ' * 12}]"
+                         result_text = f"-> 1x Paleta Niestandardowa (na {loc_ids[0]}-{loc_ids[1]})" # Poprawiony tekst
+                    elif pair == (2, 3):
+                         vis = f"[{' ' * 12} | {loc_ids[1]:<12} | {loc_ids[2]:<12}]"
+                         result_text = f"-> 1x Paleta Niestandardowa (na {loc_ids[1]}-{loc_ids[2]})" # Poprawiony tekst
+                output_lines.append(f"{vis}  {result_text}") # Dodajemy poprawny tekst wyniku
+            output_lines.append("")
 
         if move_ops:
-            output_lines.append("\n**Miejsca dostępne PO PRZESUNIĘCIU palety:**")
+            output_lines.append("\n**Zrób miejsce na paletę niestandardową PRZESUWAJĄC paletę:**") # Zmieniony nagłówek
             move_ops.sort(key=lambda x: x["locations"][0].get("id", ""))
             for op in move_ops:
                 locs = op["locations"]
                 occupied_pos = op["occupied_pos"]
-                notes = op["notes"]
-                loc_ids = {l.get('position', 0): l.get('id', '???') for l in locs}
+                # notes = op["notes"] # Oryginalna notatka nie jest już potrzebna
+                loc_by_pos = {l.get('position', 0): l for l in locs} # Słownik dla łatwiejszego dostępu
+
+                loc1 = loc_by_pos.get(1)
+                loc2 = loc_by_pos.get(2) # Zajęta
+                loc3 = loc_by_pos.get(3)
+
+                loc1_id = loc1.get('id', '???') if loc1 else '???'
+                loc2_id = loc2.get('id', '???') if loc2 else '???'
+                loc3_id = loc3.get('id', '???') if loc3 else '???'
 
                 # Wizualizacja stanu początkowego
-                initial_state_vis = "["
-                initial_state_vis += f"{loc_ids.get(1, ''):<12} (wolne) | "
-                initial_state_vis += f"{loc_ids.get(2, ''):<12} (ZAJĘTE)| "
-                initial_state_vis += f"{loc_ids.get(3, ''):<12} (wolne)]"
+                initial_state_vis = f"[{loc1_id:<12} | {loc2_id:<12} | {loc3_id:<12}]"
+                state_desc =      f" (wolne)      (ZAJĘTE)     (wolne)" # Opis stanu
 
-                # Wizualizacja stanu końcowego
-                final_state_vis = f"[{loc_ids.get(1, ''):<12} | {'-'*12} | {loc_ids.get(3, ''):<12}]" # Środkowa pusta
+                # ИЗМЕНЕНО: Bardziej precyzyjna instrukcja przesunięcia
+                action_text = f"**Przesuń paletę z {loc2_id} na {loc1_id} LUB {loc3_id}**"
+
+                # Wynik (miejsce na 1 paletę niestandardową)
+                result_text = "-> Uzyskasz miejsce na 1x Paletę Niestandardową"
 
                 output_lines.append(f"1. Stan obecny:   {initial_state_vis}")
-                output_lines.append(f"2. Akcja:         **{notes}**") # Np. Przesuń paletę z F.A4.0
-                output_lines.append(f"3. Wynik:         {final_state_vis}  ->  1x Paleta Niestandardowa")
+                output_lines.append(f"                  {state_desc}")
+                output_lines.append(f"2. Akcja:         {action_text}")
+                output_lines.append(f"3. Wynik:         {result_text}")
                 output_lines.append("") # Pusta linia między możliwościami przesunięcia
 
     return "\n".join(output_lines)
