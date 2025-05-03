@@ -3,37 +3,45 @@ import pandas as pd
 import json
 import os
 import io
-from collections import defaultdict, Counter
+from collections import defaultdict
 from typing import List, Dict, Optional, Set, Any
 import traceback
 
 # --- Логика анализа ---
 
-# Функция чтения локального layout.json (bez zmian)
 def read_layout_data() -> Optional[Dict]:
+    """Czyta plik layout.json z repozytorium."""
     file_path = "layout.json"
     try:
         if not os.path.exists(file_path):
              st.warning(f"Plik '{file_path}' nie znaleziony. Używana jest pusta struktura.")
              return {"Version": "1.0", "Layout": {}}
-        with open(file_path, 'r', encoding='utf-8') as f: data = json.load(f)
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
         if not isinstance(data, dict) or "Layout" not in data or not isinstance(data.get("Layout"), dict):
              raise ValueError("Plik layout.json nie zawiera oczekiwanej struktury JSON.")
+        # st.success("Plik struktury magazynu (layout.json) pomyślnie załadowany z repozytorium.") # Убрано
         return data
-    except Exception as e: st.error(f"Błąd odczytu pliku layout.json: {e}"); return None
+    except Exception as e:
+        st.error(f"Błąd odczytu pliku layout.json: {e}")
+        return None
 
-# Функция чтения пустых локаций (bez zmian)
 def read_empty_locations_from_b3(uploaded_file) -> Optional[Set[str]]:
-    if uploaded_file is None: st.error("Plik pustych lokalizacji nie został załadowany."); return None
+    if uploaded_file is None:
+        st.error("Plik pustych lokalizacji (Excel/CSV) nie został załadowany.")
+        return None
     file_name = uploaded_file.name
     st.info(f"Odczyt pliku pustych lokalizacji: {file_name} (dane od B3)")
     try:
         excel_engine = None; is_csv = False
         file_ext = os.path.splitext(file_name)[1].lower()
         if file_ext == '.csv': is_csv = True
-        elif file_ext == '.xls': excel_engine = 'xlrd'; import xlrd
+        elif file_ext == '.xls':
+            excel_engine = 'xlrd'
+            try: import xlrd
+            except ImportError: raise ImportError("Wymagana biblioteka 'xlrd' do odczytu plików .xls.")
         elif file_ext == '.xlsx': excel_engine = 'openpyxl'
-        else: st.error(f"Nieobsługiwany format pliku: {file_ext}."); return None
+        else: st.error(f"Nieobsługiwany format pliku: {file_ext}. Użyj .xlsx, .xls lub .csv."); return None
         df: Optional[pd.DataFrame] = None
         file_content = io.BytesIO(uploaded_file.getvalue())
         if is_csv:
@@ -43,7 +51,10 @@ def read_empty_locations_from_b3(uploaded_file) -> Optional[Set[str]]:
                     file_content.seek(0)
                     df = pd.read_csv(file_content, delimiter=';', header=2, usecols=[1], encoding=enc, skipinitialspace=True, on_bad_lines='skip')
                     st.write(f"(CSV odczytany z kodowaniem {enc})"); detected_encoding = enc; break
-                except: continue
+                except UnicodeDecodeError: continue
+                except Exception as e_csv:
+                     try: file_content.seek(0); pd.read_csv(file_content, delimiter=';', header=2, encoding=enc, nrows=1); raise e_csv
+                     except Exception: continue
             if df is None: raise ValueError("Nie udało się odczytać pliku CSV.")
         else: df = pd.read_excel(file_content, header=None, skiprows=2, usecols=[1], sheet_name=0, engine=excel_engine)
         if df is None or df.empty: st.warning("Plik pustych lokalizacji nie zawiera danych w kolumnie B od 3. wiersza."); return set()
@@ -54,210 +65,170 @@ def read_empty_locations_from_b3(uploaded_file) -> Optional[Set[str]]:
         st.success(f"Załadowano {count} unikalnych ID pustych lokalizacji z {file_name}.")
         return empty_locations_set
     except ImportError as e: st.error(f"Błąd importu biblioteki: {e}."); return None
-    except Exception as e: st.error(f"Błąd odczytu pliku pustych lokalizacji: {e}"); return None
+    except ValueError as e: st.error(f"Błąd danych lub formatu pliku pustych lokalizacji: {e}"); return None
+    except Exception as e: st.error(f"Nieoczekiwany błąd podczas odczytu pliku pustych lokalizacji: {e}"); return None
 
-# ИЗМЕНЕНО: Функция анализа теперь добавляет детали всех локаций секции
-def analyze_opportunities_internal(layout_data: Dict, empty_locations_set: Set[str]) -> List[Dict[str, Any]]:
-    """Wykonuje analizę możliwości, dodając szczegóły lokalizacji sekcji."""
-    opportunities = []
-    sections_data = defaultdict(lambda: {"capacity": 0, "locations": [], "hall": ""}) # Dodano hall
+# ИЗМЕНЕНО: Функция анализа теперь возвращает словарь сгруппированный по залам
+def analyze_opportunities_internal(layout_data: Dict, empty_locations_set: Set[str]) -> Dict[str, List[Dict[str, Any]]]:
+    """Wykonuje analizę możliwości i grupuje wyniki według hali."""
+    # Словарь для хранения результатов по залам
+    opportunities_by_hall = defaultdict(list)
     layout = layout_data.get("Layout", {})
 
-    # Krok 1: Zbierz dane o sekcjach
+    # Итерация по структуре для сбора данных о секциях
     for hall, rows in layout.items():
         if not isinstance(rows, dict): continue
         for row, levels in rows.items():
             if not isinstance(levels, dict): continue
             for level_str, level_data in levels.items():
                 if not isinstance(level_data, dict): continue
-                locations = level_data.get("Locations", [])
-                if not isinstance(locations, list): continue
-                for loc_info in locations:
+
+                # Группируем локации текущего уровня по SectionID
+                locations_in_level = level_data.get("Locations", [])
+                if not isinstance(locations_in_level, list): continue
+
+                sections_in_level = defaultdict(list)
+                for loc_info in locations_in_level:
                     if not isinstance(loc_info, dict): continue
                     section_id = loc_info.get("SectionID")
-                    if section_id:
+                    if section_id: # Собираем только локации внутри секций
                         loc_num = loc_info.get("Number")
                         if loc_num is None: continue
                         location_id = f"{hall}.{row}{loc_num}.{level_str}"
+                        is_accessible = loc_info.get("IsAccessible", True)
+                        is_corridor = loc_info.get("IsCorridor", False)
+                        pos_in_section = loc_info.get("PositionInSection", 0)
                         is_empty = location_id in empty_locations_set
-                        location_details = {
+                        section_capacity = loc_info.get("SectionCapacity", 0) # Получаем емкость
+
+                        sections_in_level[section_id].append({
                             "id": location_id,
-                            "position": loc_info.get("PositionInSection", 0),
+                            "position": pos_in_section,
                             "is_empty": is_empty,
-                            "is_accessible": loc_info.get("IsAccessible", True),
-                            "is_corridor": loc_info.get("IsCorridor", False)
-                        }
-                        if not sections_data[section_id]["capacity"]:
-                            sections_data[section_id]["capacity"] = loc_info.get("SectionCapacity", 0)
-                            sections_data[section_id]["hall"] = hall # Zapisz halę dla sekcji
-                        sections_data[section_id]["locations"].append(location_details)
+                            "is_accessible": is_accessible,
+                            "is_corridor": is_corridor,
+                            "capacity": section_capacity # Сохраняем емкость
+                        })
 
-    # Krok 2: Analizuj każdą sekcję
-    for section_id, section_info in sections_data.items():
-        locations_in_section = sorted(section_info["locations"], key=lambda x: x["position"])
-        capacity = section_info["capacity"]
-        hall = section_info["hall"]
-        loc_by_pos = {loc["position"]: loc for loc in locations_in_section}
+                # Анализ собранных секций на текущем уровне
+                for section_id, locations_in_section in sections_in_level.items():
+                    # Проверяем, что все локации секции доступны и не коридоры
+                    if not all(loc["is_accessible"] and not loc["is_corridor"] for loc in locations_in_section):
+                        continue # Пропускаем секцию с недоступными/коридорами
 
-        # Pomijamy sekcje, które nie są dostępne lub są korytarzami (chociaż takich nie powinno być)
-        if not all(loc.get("is_accessible", False) and not loc.get("is_corridor", True) for loc in locations_in_section):
-            continue
+                    locations_in_section.sort(key=lambda x: x["position"])
+                    capacity = locations_in_section[0]["capacity"] if locations_in_section else 0
+                    loc_by_pos = {loc["position"]: loc for loc in locations_in_section}
 
-        # Sprawdź możliwości dla palet niestandardowych
-        if capacity == 2:
-            loc1 = loc_by_pos.get(1)
-            loc2 = loc_by_pos.get(2)
-            if loc1 and loc1["is_empty"] and loc2 and loc2["is_empty"]:
-                opportunities.append({
-                    "OpportunityType": "NonStandard_Direct",
-                    "Hall": hall,
-                    "Locations": [loc1, loc2], # Przekazujemy listę lokalizacji
-                    "Notes": ""
-                })
-        elif capacity == 3:
-            loc1 = loc_by_pos.get(1)
-            loc2 = loc_by_pos.get(2)
-            loc3 = loc_by_pos.get(3)
+                    if capacity == 3:
+                        loc1 = loc_by_pos.get(1)
+                        loc2 = loc_by_pos.get(2)
+                        loc3 = loc_by_pos.get(3)
+                        if not (loc1 and loc2 and loc3): continue # Пропускаем неполные секции
 
-            # Sprawdź, czy wszystkie 3 są wolne (miejsce na 2 palety niestandardowe)
-            if loc1 and loc1["is_empty"] and loc2 and loc2["is_empty"] and loc3 and loc3["is_empty"]:
-                 opportunities.append({
-                    "OpportunityType": "NonStandard_Direct_3_Full", # Specjalny typ
-                    "Hall": hall,
-                    "Locations": [loc1, loc2, loc3],
-                    "Notes": ""
-                 })
-            else:
-                # Sprawdź parę 1-2
-                if loc1 and loc1["is_empty"] and loc2 and loc2["is_empty"]:
-                     opportunities.append({
-                        "OpportunityType": "NonStandard_Direct",
-                        "Hall": hall,
-                        "Locations": [loc1, loc2, loc3], # Przekazujemy wszystkie 3 dla kontekstu
-                        "Pair": (1, 2), # Wskazujemy, która para jest wolna
-                        "Notes": ""
-                     })
-                # Sprawdź parę 2-3
-                if loc2 and loc2["is_empty"] and loc3 and loc3["is_empty"]:
-                     opportunities.append({
-                        "OpportunityType": "NonStandard_Direct",
-                        "Hall": hall,
-                        "Locations": [loc1, loc2, loc3],
-                        "Pair": (2, 3),
-                        "Notes": ""
-                     })
+                        # Случай 1: Все 3 свободны (2 нест. палеты)
+                        if loc1["is_empty"] and loc2["is_empty"] and loc3["is_empty"]:
+                            opportunities_by_hall[hall].append({
+                                "type": "WOLNA_SEKCJA_3",
+                                "locations": [loc1["id"], loc2["id"], loc3["id"]]
+                            })
+                        # Случай 2: 1 и 3 свободны, 2 занята (нужно перемещение для 1 нест. палеты)
+                        elif loc1["is_empty"] and loc3["is_empty"] and not loc2["is_empty"]:
+                             opportunities_by_hall[hall].append({
+                                "type": "PRZESUN_SRODEK",
+                                "locations": [loc1["id"], loc2["id"], loc3["id"]],
+                                "move_from": loc2["id"] # Указываем, откуда двигать
+                            })
+                        # Другие комбинации в секции из 3 не дают возможности для *нестандартной* палеты
 
-            # Sprawdź możliwość przesunięcia (1 wolna, 2 zajęta, 3 wolna)
-            if loc1 and loc1["is_empty"] and loc3 and loc3["is_empty"] and loc2 and not loc2["is_empty"]:
-                 opportunities.append({
-                    "OpportunityType": "NonStandard_MoveRequired",
-                    "Hall": hall,
-                    "Locations": [loc1, loc2, loc3], # Przekazujemy wszystkie 3
-                    "OccupiedPos": 2, # Wskazujemy zajętą pozycję
-                    "Notes": f"Przesuń paletę z {loc2['id']}" # Generujemy notatkę
-                 })
+                    elif capacity == 2:
+                        loc1 = loc_by_pos.get(1)
+                        loc2 = loc_by_pos.get(2)
+                        if not (loc1 and loc2): continue # Пропускаем неполные секции
 
-    return opportunities
+                        # Случай 3: Обе свободны (1 нест. палета)
+                        if loc1["is_empty"] and loc2["is_empty"]:
+                            opportunities_by_hall[hall].append({
+                                "type": "WOLNA_SEKCJA_2",
+                                "locations": [loc1["id"], loc2["id"]]
+                            })
 
+    return opportunities_by_hall
 
-# ИЗМЕНЕНО: Poprawiona funkcja formatowania z prawidłowym tekstem
-def format_analysis_results_visual(opportunities: List[Dict[str, Any]]) -> str:
-    """Formatuje wyniki analizy w sposób wizualny, pogrupowane według hali."""
-
-    opportunities_by_hall = defaultdict(lambda: {"direct": [], "move": []})
-    for opp in opportunities:
-        hall = opp.get("Hall", "Nieznana Hala")
-        opp_type = opp.get("OpportunityType")
-        locations = opp.get("Locations", [])
-        notes = opp.get("Notes", "")
-        pair = opp.get("Pair")
-        occupied_pos = opp.get("OccupiedPos")
-
-        locations.sort(key=lambda x: x.get("position", 0))
-
-        if opp_type == "NonStandard_Direct":
-            opportunities_by_hall[hall]["direct"].append({"locations": locations, "pair": pair})
-        elif opp_type == "NonStandard_Direct_3_Full":
-             opportunities_by_hall[hall]["direct"].append({"locations": locations, "pair": (1, 3)})
-        elif opp_type == "NonStandard_MoveRequired":
-            opportunities_by_hall[hall]["move"].append({"locations": locations, "occupied_pos": occupied_pos, "notes": notes})
+# НОВАЯ функция форматирования с группировкой по залам
+def create_results_markdown(opportunities_by_hall: Dict[str, List[Dict[str, Any]]]) -> str:
+    """Formatuje wyniki analizy w Markdown z grupowaniem według hali."""
 
     if not opportunities_by_hall:
-        return "Nie znaleziono obecnie miejsc dla palet niestandardowych."
+        return "## Nie znaleziono miejsc dla palet niestandardowych."
 
-    output_lines = []
+    markdown_lines = []
+    markdown_lines.append("# Dostępne miejsca dla palet NIESTANDARDOWYCH")
+    markdown_lines.append("*(Paleta niestandardowa zajmuje 2 miejsca)*")
+    markdown_lines.append("---")
+
+    # Сортируем залы по имени
     sorted_halls = sorted(opportunities_by_hall.keys())
 
     for hall in sorted_halls:
-        hall_data = opportunities_by_hall[hall]
-        direct_ops = hall_data["direct"]
-        move_ops = hall_data["move"]
+        opportunities_in_hall = opportunities_by_hall[hall]
+        if not opportunities_in_hall: continue # Пропускаем зал без возможностей
 
-        if not direct_ops and not move_ops: continue
+        markdown_lines.append(f"## Hala: {hall}")
+        markdown_lines.append("") # Пустая строка
 
-        output_lines.append("")
-        output_lines.append(f"--- SALA: {hall} ---")
-        output_lines.append("-" * (len(hall) + 10))
+        # Сортируем возможности внутри зала по первой локации
+        opportunities_in_hall.sort(key=lambda x: x["locations"][0])
 
-        if direct_ops:
-            output_lines.append("\n**Miejsca GOTOWE na paletę niestandardową:**")
-            direct_ops.sort(key=lambda x: x["locations"][0].get("id", ""))
-            for op in direct_ops:
-                locs = op["locations"]
-                pair = op.get("pair")
-                loc_ids = [l.get('id', '???') for l in locs]
-                result_text = "" # Tekst opisujący wynik
+        has_direct_placement = False
+        has_move_required = False
 
-                if len(locs) == 2:
-                    vis = f"[{loc_ids[0]:<12} | {loc_ids[1]:<12}]"
-                    result_text = "-> 1x Paleta Niestandardowa" # Poprawiony tekst
-                elif len(locs) == 3:
-                    if pair == (1, 3): # Wszystkie 3 wolne
-                         vis = f"[{loc_ids[0]:<12} | {loc_ids[1]:<12} | {loc_ids[2]:<12}]"
-                         result_text = "-> **2x Paleta Niestandardowa**" # Poprawiony tekst
-                    elif pair == (1, 2):
-                         vis = f"[{loc_ids[0]:<12} | {loc_ids[1]:<12} | {' ' * 12}]"
-                         result_text = f"-> 1x Paleta Niestandardowa (na {loc_ids[0]}-{loc_ids[1]})" # Poprawiony tekst
-                    elif pair == (2, 3):
-                         vis = f"[{' ' * 12} | {loc_ids[1]:<12} | {loc_ids[2]:<12}]"
-                         result_text = f"-> 1x Paleta Niestandardowa (na {loc_ids[1]}-{loc_ids[2]})" # Poprawiony tekst
-                output_lines.append(f"{vis}  {result_text}") # Dodajemy poprawny tekst wyniku
-            output_lines.append("")
+        # Сначала выводим возможности, где можно ставить сразу
+        direct_placement_lines = []
+        for opp in opportunities_in_hall:
+            opp_type = opp["type"]
+            locations = opp["locations"]
+            if opp_type == "WOLNA_SEKCJA_3":
+                direct_placement_lines.append(f"- **Cała sekcja 3-miejscowa wolna:** `{locations[0]}`, `{locations[1]}`, `{locations[2]}`")
+                direct_placement_lines.append(f"  *(Można umieścić 2 palety niestandardowe)*")
+                has_direct_placement = True
+            elif opp_type == "WOLNA_SEKCJA_2":
+                direct_placement_lines.append(f"- **Sekcja 2-miejscowa wolna:** `{locations[0]}`, `{locations[1]}`")
+                direct_placement_lines.append(f"  *(Można umieścić 1 paletę niestandardową)*")
+                has_direct_placement = True
 
-        if move_ops:
-            output_lines.append("\n**Zrób miejsce na paletę niestandardową PRZESUWAJĄC paletę:**") # Zmieniony nagłówek
-            move_ops.sort(key=lambda x: x["locations"][0].get("id", ""))
-            for op in move_ops:
-                locs = op["locations"]
-                occupied_pos = op["occupied_pos"]
-                # notes = op["notes"] # Oryginalna notatka nie jest już potrzebna
-                loc_by_pos = {l.get('position', 0): l for l in locs} # Słownik dla łatwiejszego dostępu
+        if has_direct_placement:
+            markdown_lines.append("**Można postawić OD RAZU:**")
+            markdown_lines.extend(direct_placement_lines)
+            markdown_lines.append("") # Пустая строка
 
-                loc1 = loc_by_pos.get(1)
-                loc2 = loc_by_pos.get(2) # Zajęta
-                loc3 = loc_by_pos.get(3)
+        # Затем выводим возможности, требующие перемещения
+        move_required_lines = []
+        for opp in opportunities_in_hall:
+            opp_type = opp["type"]
+            locations = opp["locations"]
+            if opp_type == "PRZESUN_SRODEK":
+                move_from_loc = opp["move_from"]
+                loc1 = locations[0]
+                loc3 = locations[2]
+                move_required_lines.append(f"- **Przesuń paletę z:** `{move_from_loc}`")
+                move_required_lines.append(f"  **Aby zwolnić miejsca:** `{loc1}` **i** `{loc3}`")
+                move_required_lines.append(f"  *(Dla 1 palety niestandardowej)*")
+                has_move_required = True
 
-                loc1_id = loc1.get('id', '???') if loc1 else '???'
-                loc2_id = loc2.get('id', '???') if loc2 else '???'
-                loc3_id = loc3.get('id', '???') if loc3 else '???'
+        if has_move_required:
+             markdown_lines.append("**Można postawić PO PRZESUNIĘCIU palety:**")
+             markdown_lines.extend(move_required_lines)
+             markdown_lines.append("") # Пустая строка
 
-                # Wizualizacja stanu początkowego
-                initial_state_vis = f"[{loc1_id:<12} | {loc2_id:<12} | {loc3_id:<12}]"
-                state_desc =      f" (wolne)      (ZAJĘTE)     (wolne)" # Opis stanu
+        # Если в зале не было ни одного типа, добавим сообщение
+        if not has_direct_placement and not has_move_required:
+             markdown_lines.append("*Brak możliwości w tej hali.*")
+             markdown_lines.append("")
 
-                # ИЗМЕНЕНО: Bardziej precyzyjna instrukcja przesunięcia
-                action_text = f"**Przesuń paletę z {loc2_id} na {loc1_id} LUB {loc3_id}**"
+        markdown_lines.append("---") # Разделитель между залами
 
-                # Wynik (miejsce na 1 paletę niestandardową)
-                result_text = "-> Uzyskasz miejsce na 1x Paletę Niestandardową"
-
-                output_lines.append(f"1. Stan obecny:   {initial_state_vis}")
-                output_lines.append(f"                  {state_desc}")
-                output_lines.append(f"2. Akcja:         {action_text}")
-                output_lines.append(f"3. Wynik:         {result_text}")
-                output_lines.append("") # Pusta linia między możliwościami przesunięcia
-
-    return "\n".join(output_lines)
+    return "\n".join(markdown_lines)
 
 
 # --- Streamlit UI ---
@@ -268,7 +239,8 @@ st.sidebar.header("1. Załaduj plik")
 
 uploaded_empty_loc_file = st.sidebar.file_uploader(
     "Załaduj plik pustych lokalizacji (Excel/CSV)",
-    type=["xlsx", "xls", "csv"]
+    type=["xlsx", "xls", "csv"],
+    help="Wybierz plik wygenerowany przez WMS. Dane powinny zaczynać się w komórce B3."
 )
 
 st.sidebar.info("Plik struktury magazynu (layout.json) jest ładowany automatycznie.")
@@ -281,7 +253,7 @@ results_placeholder = st.empty()
 results_placeholder.info("Załaduj plik pustych lokalizacji i kliknij 'Uruchom analizę'.")
 
 # --- Логика выполнения при нажатии кнопки ---
-analysis_results_text = "" # Zmienna do przechowywania tekstu do druku
+analysis_results_markdown = "" # Переменная для хранения Markdown для печати
 
 if run_button:
     results_placeholder.info("Wczytywanie struktury magazynu...")
@@ -296,54 +268,77 @@ if run_button:
         if empty_locations is not None:
             results_placeholder.info("Wykonywanie analizy...")
             try:
-                opportunities = analyze_opportunities_internal(layout_data, empty_locations)
-                # ИЗМЕНЕНО: Вызываем новую функцию форматирования
-                analysis_results_text = format_analysis_results_visual(opportunities)
-                # Используем markdown для лучшего отображения жирного шрифта и пробелов
-                results_placeholder.markdown(f"<pre style='font-size: 0.9em; line-height: 1.3;'>{analysis_results_text}</pre>", unsafe_allow_html=True)
+                opportunities_by_hall = analyze_opportunities_internal(layout_data, empty_locations)
+                # ИЗМЕНЕНО: Генерируем Markdown
+                analysis_results_markdown = create_results_markdown(opportunities_by_hall)
+                # ИЗМЕНЕНО: Отображаем Markdown
+                results_placeholder.markdown(analysis_results_markdown, unsafe_allow_html=True)
 
             except Exception as e:
                 st.error(f"Błąd podczas wykonywania analizy: {e}")
                 results_placeholder.error(f"Wystąpił błąd podczas analizy. Szczegóły: {e}")
-                analysis_results_text = ""
+                analysis_results_markdown = "" # Очищаем текст при ошибке
 
         else:
             results_placeholder.warning("Analiza nie może zostać wykonana (błąd odczytu pliku pustych lokalizacji).")
-            analysis_results_text = ""
+            analysis_results_markdown = "" # Очищаем текст при ошибке
 
 # --- Кнопка Печати ---
-if analysis_results_text and "Nie znaleziono obecnie miejsc" not in analysis_results_text:
+# Показываем кнопку только если есть результаты для печати (проверяем наличие markdown)
+if analysis_results_markdown and "## Nie znaleziono miejsc" not in analysis_results_markdown:
     st.sidebar.header("3. Drukuj")
     print_button_html = """
     <style>
-    .print-button { /* Стили кнопки */ }
-    /* Добавляем стили для печати, чтобы скрыть ненужные элементы */
+    /* Стили для кнопки печати */
     @media print {
-      header, .stSidebar, .css-1rs6os.e17vqv3v0, .css-1rs6os.e17vqv3v0 > *, .stButton, .stDownloadButton, .stFileUploader, .stSpinner, .stAlert, .stInfo, .stSuccess, .stWarning, .stError {
+      /* Скрываем боковую панель и другие элементы при печати */
+      div[data-testid="stSidebar"], header, footer {
         display: none !important;
       }
-      /* Стили для основного контента при печати */
-      .main .block-container {
-        padding-top: 1rem !important;
-        padding-bottom: 1rem !important;
-        padding-left: 1rem !important;
-        padding-right: 1rem !important;
-        width: 100% !important; /* Занять всю ширину листа */
-        max-width: 100% !important;
+      /* Заставляем основной контент занимать всю ширину */
+      div[data-testid="stAppViewContainer"] > section {
+         margin-left: 0 !important;
+         width: 100% !important;
+         padding: 1cm !important; /* Добавляем поля для печати */
       }
-      pre { /* Стили для блока с результатами */
-          font-size: 9pt !important; /* Уменьшаем шрифт для печати */
-          line-height: 1.2 !important;
-          white-space: pre-wrap !important; /* Разрешаем перенос строк */
-          word-wrap: break-word !important;
+       /* Скрываем саму кнопку печати при печати */
+      .print-button-container {
+          display: none !important;
       }
-      h1, h2, h3 { /* Стили для заголовков при печати */
-          margin-top: 0.5em !important;
-          margin-bottom: 0.2em !important;
-          font-size: 11pt !important;
-      }
+      /* Убираем лишние отступы у markdown */
+       div[data-testid="stMarkdownContainer"] {
+           padding-top: 0 !important;
+       }
+       /* Увеличиваем шрифт для читаемости при печати */
+       body, p, li, h1, h2, h3 {
+            font-size: 12pt !important;
+       }
+       code { /* Стиль для локаций в `обратных кавычках` */
+            font-family: monospace !important;
+            font-size: 11pt !important;
+            background-color: #f0f0f0 !important; /* Светлый фон для выделения */
+            padding: 1px 3px;
+            border-radius: 3px;
+            color: black !important; /* Черный текст */
+            -webkit-print-color-adjust: exact !important; /* Chrome/Safari: принудительно печатать фон */
+            print-color-adjust: exact !important; /* Стандарт: принудительно печатать фон */
+       }
+       strong { /* Стиль для выделенного текста */
+            font-weight: bold !important;
+       }
     }
+    .print-button {
+        display: inline-block; padding: 0.6em 1.2em; border: none; border-radius: 5px;
+        background-color: #0068c9; color: white; text-align: center;
+        text-decoration: none; cursor: pointer; font-size: 1em; font-family: inherit;
+        width: 100%; /* Кнопка на всю ширину сайдбара */
+        margin-bottom: 1em;
+    }
+    .print-button:hover { background-color: #00509e; }
+    .print-button:active { background-color: #003b7a; }
     </style>
-    <button class="print-button" onclick="window.print()">Drukuj wyniki</button>
+    <div class="print-button-container">
+        <button class="print-button" onclick="window.print()">Drukuj wyniki</button>
+    </div>
     """
     st.sidebar.markdown(print_button_html, unsafe_allow_html=True)
