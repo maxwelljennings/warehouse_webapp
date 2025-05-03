@@ -18,12 +18,13 @@ def read_layout_data() -> Optional[Dict]:
              return {"Version": "1.0", "Layout": {}}
         with open(file_path, 'r', encoding='utf-8') as f: data = json.load(f)
         if not isinstance(data, dict) or "Layout" not in data or not isinstance(data.get("Layout"), dict): raise ValueError("Plik layout.json nie zawiera oczekiwanej struktury JSON.")
+        st.success("Plik struktury magazynu (layout.json) pomyślnie załadowany z repozytorium.")
         return data
     except Exception as e: st.error(f"Błąd odczytu pliku layout.json: {e}"); return None
 
 # Функция чтения пустых локаций (без изменений)
 def read_empty_locations_from_b3(uploaded_file) -> Optional[Set[str]]:
-    if uploaded_file is None: st.error("Plik pustych lokalizacji nie został załadowany."); return None
+    if uploaded_file is None: st.error("Plik pustych lokalizacji (Excel/CSV) nie został załadowany."); return None
     file_name = uploaded_file.name
     st.info(f"Odczyt pliku pustych lokalizacji: {file_name} (dane od B3)")
     try:
@@ -53,20 +54,17 @@ def read_empty_locations_from_b3(uploaded_file) -> Optional[Set[str]]:
     except ValueError as e: st.error(f"Błąd danych lub formatu pliku pustych lokalizacji: {e}"); return None
     except Exception as e: st.error(f"Nieoczekiwany błąd podczas odczytu pliku pustych lokalizacji: {e}"); return None
 
-# ИЗМЕНЕНО: Функция анализа теперь возвращает словарь секций с возможностями
-def analyze_opportunities_internal(layout_data: Dict, empty_locations_set: Set[str]) -> Dict[str, Dict]:
+# ИЗМЕНЕНО: Функция анализа теперь возвращает более подробную информацию для визуализации
+def analyze_opportunities_internal(layout_data: Dict, empty_locations_set: Set[str]) -> List[Dict[str, Any]]:
     """
-    Analizuje możliwości i zwraca słownik sekcji z możliwościami
-    dla palet niestandardowych.
-    Klucz: SectionID
-    Wartość: Słownik {'capacity': int, 'locations': list[dict], 'opportunity_type': str}
-    opportunity_type: 'Direct' lub 'MoveRequired'
+    Analizuje możliwości i zwraca listę słowników z detalami dla wizualizacji.
+    Każdy słownik reprezentuje sekcję z możliwością i zawiera listę jej lokalizacji.
     """
-    relevant_sections = defaultdict(lambda: {"capacity": 0, "locations": [], "opportunity_type": None})
+    opportunities_details = [] # Список для хранения деталей секций с возможностями
+    sections_data = defaultdict(lambda: {"capacity": 0, "locations": [], "has_opportunity": False})
     layout = layout_data.get("Layout", {})
 
-    # 1. Zbierz dane o wszystkich lokalizacjach we wszystkich sekcjach
-    all_sections_data = defaultdict(lambda: {"capacity": 0, "locations": []})
+    # 1. Сбор данных по секциям
     for hall, rows in layout.items():
         if not isinstance(rows, dict): continue
         for row, levels in rows.items():
@@ -78,228 +76,253 @@ def analyze_opportunities_internal(layout_data: Dict, empty_locations_set: Set[s
                 for loc_info in locations:
                     if not isinstance(loc_info, dict): continue
                     section_id = loc_info.get("SectionID")
-                    if not section_id: continue # Interesują nas tylko sekcje
+                    if not section_id: continue # Интересуют только секции
 
                     loc_num = loc_info.get("Number")
                     if loc_num is None: continue
 
                     location_id = f"{hall}.{row}{loc_num}.{level_str}"
                     is_accessible = loc_info.get("IsAccessible", True)
-                    is_corridor = loc_info.get("IsCorridor", False) # Коридоры не должны быть в секциях, но проверим
+                    is_corridor = loc_info.get("IsCorridor", False)
                     section_capacity = loc_info.get("SectionCapacity", 0)
                     pos_in_section = loc_info.get("PositionInSection", 0)
                     is_empty = location_id in empty_locations_set
 
                     location_details = {
                         "id": location_id,
-                        "number": loc_num,
                         "is_accessible": is_accessible,
                         "is_corridor": is_corridor,
                         "is_empty": is_empty,
                         "position": pos_in_section,
-                        # Добавляем capacity в детали локации для удобства
-                        "section_capacity": section_capacity
                     }
 
-                    if not all_sections_data[section_id]["capacity"]:
-                        all_sections_data[section_id]["capacity"] = section_capacity
-                    all_sections_data[section_id]["locations"].append(location_details)
+                    if not sections_data[section_id]["capacity"]:
+                        sections_data[section_id]["capacity"] = section_capacity
+                    sections_data[section_id]["locations"].append(location_details)
 
-    # 2. Przeanalizuj zebrane sekcje pod kątem możliwości niestandardowych
-    for section_id, section_info in all_sections_data.items():
+    # 2. Анализ каждой секции на наличие возможностей для НЕСТАНДАРТНЫХ палет
+    for section_id, section_info in sections_data.items():
         locations_in_section = sorted(section_info["locations"], key=lambda x: x["position"])
         capacity = section_info["capacity"]
         loc_by_pos = {loc["position"]: loc for loc in locations_in_section}
+        found_opportunity_in_section = False
 
-        found_opportunity = None # 'Direct' lub 'MoveRequired'
-
-        # Sprawdź NonStandard_MoveRequired (Capacity 3) - ma priorytet
-        if capacity == 3:
-            loc1 = loc_by_pos.get(1); loc2 = loc_by_pos.get(2); loc3 = loc_by_pos.get(3)
+        # Проверка NonStandard_Direct (Capacity 2)
+        if capacity == 2:
+            loc1 = loc_by_pos.get(1); loc2 = loc_by_pos.get(2)
             if (loc1 and loc1["is_accessible"] and not loc1["is_corridor"] and loc1["is_empty"] and
-                loc3 and loc3["is_accessible"] and not loc3["is_corridor"] and loc3["is_empty"] and
-                loc2 and loc2["is_accessible"] and not loc2["is_corridor"] and not loc2["is_empty"]):
-                found_opportunity = "MoveRequired"
-                # Добавляем информацию о том, какую локацию двигать, прямо в детали средней локации
-                loc2['needs_move'] = True
-                loc2['move_target_for'] = (loc1['id'], loc3['id']) # Куда можно поставить после сдвига
+                loc2 and loc2["is_accessible"] and not loc2["is_corridor"] and loc2["is_empty"]):
+                section_info["opportunity_type"] = "NonStandard_Direct"
+                section_info["involved_positions"] = [1, 2]
+                found_opportunity_in_section = True
 
-        # Sprawdź NonStandard_Direct (jeśli MoveRequired не найден)
-        if not found_opportunity:
-            if capacity == 2:
-                loc1 = loc_by_pos.get(1); loc2 = loc_by_pos.get(2)
-                if (loc1 and loc1["is_accessible"] and not loc1["is_corridor"] and loc1["is_empty"] and
-                    loc2 and loc2["is_accessible"] and not loc2["is_corridor"] and loc2["is_empty"]):
-                    found_opportunity = "Direct"
-            elif capacity == 3:
-                loc1 = loc_by_pos.get(1); loc2 = loc_by_pos.get(2); loc3 = loc_by_pos.get(3)
-                # Проверяем обе пары
-                pair12_ok = (loc1 and loc1["is_accessible"] and not loc1["is_corridor"] and loc1["is_empty"] and
-                             loc2 and loc2["is_accessible"] and not loc2["is_corridor"] and loc2["is_empty"])
-                pair23_ok = (loc2 and loc2["is_accessible"] and not loc2["is_corridor"] and loc2["is_empty"] and
-                             loc3 and loc3["is_accessible"] and not loc3["is_corridor"] and loc3["is_empty"])
-                if pair12_ok or pair23_ok:
-                    found_opportunity = "Direct"
+        # Проверка NonStandard_Direct и MoveRequired (Capacity 3)
+        elif capacity == 3:
+            loc1 = loc_by_pos.get(1); loc2 = loc_by_pos.get(2); loc3 = loc_by_pos.get(3)
+            can_place_12 = (loc1 and loc1["is_accessible"] and not loc1["is_corridor"] and loc1["is_empty"] and
+                            loc2 and loc2["is_accessible"] and not loc2["is_corridor"] and loc2["is_empty"])
+            can_place_23 = (loc2 and loc2["is_accessible"] and not loc2["is_corridor"] and loc2["is_empty"] and
+                            loc3 and loc3["is_accessible"] and not loc3["is_corridor"] and loc3["is_empty"])
+            can_place_13_move2 = (loc1 and loc1["is_accessible"] and not loc1["is_corridor"] and loc1["is_empty"] and
+                                  loc3 and loc3["is_accessible"] and not loc3["is_corridor"] and loc3["is_empty"] and
+                                  loc2 and loc2["is_accessible"] and not loc2["is_corridor"] and not loc2["is_empty"]) # loc2 ЗАНЯТА
 
-        # Если найдена любая нестандартная возможность, добавляем секцию в результат
-        if found_opportunity:
-            relevant_sections[section_id]["capacity"] = capacity
-            relevant_sections[section_id]["locations"] = locations_in_section # Сохраняем все локации секции
-            relevant_sections[section_id]["opportunity_type"] = found_opportunity
+            if can_place_12 or can_place_23:
+                 section_info["opportunity_type"] = "NonStandard_Direct"
+                 # Определяем, какие именно пары доступны
+                 involved = []
+                 if can_place_12: involved.extend([1, 2])
+                 if can_place_23: involved.extend([2, 3])
+                 section_info["involved_positions"] = sorted(list(set(involved))) # [1, 2] или [2, 3] или [1, 2, 3]
+                 found_opportunity_in_section = True
+            elif can_place_13_move2:
+                 section_info["opportunity_type"] = "NonStandard_MoveRequired"
+                 section_info["involved_positions"] = [1, 3] # Позиции, куда ставим
+                 section_info["move_required_from_pos"] = 2 # Позиция, откуда двигаем
+                 section_info["move_required_from_id"] = loc2.get("id", "NIEZNANA") if loc2 else "NIEZNANA"
+                 found_opportunity_in_section = True
 
-    st.write(f"(Analiza: Znaleziono {len(relevant_sections)} sekcji z możliwościami dla palet niestandardowych)")
-    return relevant_sections
+        # Если в секции найдена возможность, добавляем ее в итоговый список
+        if found_opportunity_in_section:
+            section_info["section_id_internal"] = section_id # Сохраняем для группировки, но не показываем
+            opportunities_details.append(section_info)
 
-
-# НОВАЯ ФУНКЦИЯ: Форматирование секции в HTML для визуализации
-def format_section_visually(section_id: str, section_data: Dict) -> str:
-    """Generuje HTML do wizualizacji pojedynczej sekcji."""
-
-    locations = section_data.get("locations", [])
-    capacity = section_data.get("capacity", 0)
-    opportunity_type = section_data.get("opportunity_type", "Unknown")
-
-    if not locations:
-        return ""
-
-    # Определяем заголовок секции
-    header_text = ""
-    if opportunity_type == "Direct":
-        header_text = f"Sekcja {section_id}: Można postawić OD RAZU"
-    elif opportunity_type == "MoveRequired":
-        header_text = f"Sekcja {section_id}: Można postawić PO PRZESUNIĘCIU"
-    else:
-        header_text = f"Sekcja {section_id}" # На всякий случай
-
-    # Начинаем HTML блок для секции
-    html = f"<div class='section-container'><h4>{header_text}</h4><div class='location-row'>"
-
-    # Генерируем HTML для каждой локации
-    for i, loc in enumerate(locations):
-        loc_id = loc.get("id", "N/A")
-        loc_num = loc.get("number", "?")
-        is_empty = loc.get("is_empty", False)
-        is_accessible = loc.get("is_accessible", True)
-        needs_move = loc.get("needs_move", False) # Проверяем флаг для перемещения
-        pos = loc.get("position", 0)
-
-        # Определяем класс CSS для стиля
-        cell_class = "location-cell"
-        if not is_accessible:
-            cell_class += " inaccessible"
-        elif needs_move:
-             cell_class += " needs-move" # Желтый для перемещаемой
-        elif is_empty:
-            cell_class += " empty" # Зеленый для пустых
-        else:
-            cell_class += " occupied" # Красный/серый для занятых
-
-        # Определяем стиль рамки (балки)
-        border_style = ""
-        if pos == 1:
-            border_style += " border-left: 3px solid #333;" # Левая балка
-        if pos == capacity:
-            border_style += " border-right: 3px solid #333;" # Правая балка
-        if pos > 1:
-             border_style += " border-left: 1px dotted #aaa;" # Внутренняя левая
-        # Добавляем общие рамки сверху/снизу и справа для внутренних
-        border_style += " border-top: 1px solid #ccc; border-bottom: 1px solid #ccc;"
-        if pos < capacity:
-             border_style += " border-right: 1px dotted #aaa;" # Внутренняя правая
+    # Сортируем результат (например, по ID первой локации в секции) для консистентности
+    opportunities_details.sort(key=lambda x: x["locations"][0]["id"] if x["locations"] else "")
+    st.write(f"(Analiza: Znaleziono {len(opportunities_details)} sekcji z możliwościami dla palet niestandardowych)")
+    return opportunities_details
 
 
-        # Текст внутри ячейки
-        cell_text = str(loc_num)
-        if needs_move:
-            cell_text += " 🚚" # Иконка грузовика для перемещаемой
+# НОВАЯ Функция форматирования для ВИЗУАЛИЗАЦИИ
+def format_opportunities_visual(opportunities_details: List[Dict[str, Any]]) -> str:
+    """Formatuje wyniki analizy jako bloki HTML/CSS dla wizualizacji."""
 
-        # Собираем HTML для ячейки
-        html += f"<div class='{cell_class}' style='{border_style}' title='{loc_id}'>{cell_text}</div>"
+    if not opportunities_details:
+        return "<h3>Nie znaleziono obecnie miejsc dla palet niestandardowych.</h3>"
 
-    html += "</div></div>" # Закрываем location-row и section-container
-    return html
+    # CSS Стили для блоков
+    # Добавляем стили для печати (@media print)
+    css_styles = """
+    <style>
+        .opportunity-box {
+            border: 3px solid #555; /* "Балка" вокруг секции */
+            border-radius: 5px;
+            margin-bottom: 15px;
+            padding: 10px;
+            background-color: #f9f9f9;
+            page-break-inside: avoid; /* Стараемся не разрывать блок при печати */
+        }
+        .opportunity-title {
+            font-weight: bold;
+            margin-bottom: 8px;
+            font-size: 1.1em;
+        }
+        .location-row {
+            display: flex; /* Располагаем ячейки в ряд */
+            gap: 5px; /* Небольшой отступ между ячейками */
+        }
+        .location-cell {
+            border: 1px solid #ccc;
+            padding: 8px;
+            text-align: center;
+            min-width: 100px; /* Минимальная ширина ячейки */
+            flex: 1; /* Растягиваем ячейки */
+            border-radius: 3px;
+            font-weight: bold;
+            display: flex; /* Центрируем текст вертикально */
+            flex-direction: column;
+            justify-content: center;
+            min-height: 50px; /* Минимальная высота */
+        }
+        .location-id {
+            font-size: 0.9em;
+            word-wrap: break-word; /* Перенос длинных ID */
+        }
+        .cell-note {
+            font-size: 0.8em;
+            font-weight: normal;
+            margin-top: 3px;
+            color: #d9534f; /* Красный цвет для примечания */
+        }
+        .empty-cell {
+            background-color: #dff0d8; /* Светло-зеленый - пусто */
+            border-color: #b2dba1;
+            color: #3c763d;
+        }
+        .occupied-cell {
+            background-color: #fcf8e3; /* Светло-желтый - занято (для перемещения) */
+            border-color: #f8e7b5;
+            color: #8a6d3b;
+        }
+        /* Стили для печати */
+        @media print {
+            body {
+                font-size: 10pt; /* Уменьшаем шрифт для печати */
+                color: black; /* Черный текст для печати */
+            }
+            .opportunity-box {
+                border: 2px solid black !important; /* Четкие черные границы */
+                background-color: white !important; /* Белый фон */
+                margin-bottom: 10px;
+                padding: 5px;
+            }
+            .location-cell {
+                border: 1px solid black !important;
+                min-width: 80px; /* Уменьшаем ширину для А4 */
+                padding: 4px;
+                min-height: 40px;
+            }
+            .empty-cell {
+                background-color: #e9f5e5 !important; /* Чуть бледнее зеленый */
+                color: black !important;
+            }
+            .occupied-cell {
+                background-color: #fff9e6 !important; /* Чуть бледнее желтый */
+                color: black !important;
+            }
+            .cell-note {
+                 color: black !important; /* Черный текст примечания */
+                 font-style: italic;
+            }
+            /* Скрываем элементы Streamlit, которые не нужны при печати */
+            header, .stSidebar, .stButton, .stDownloadButton, .stFileUploader, .stInfo, .stSuccess, .stWarning, .stError {
+                display: none !important;
+            }
+            /* Растягиваем основной контент */
+            .main .block-container {
+                 max-width: 100% !important;
+                 padding: 1cm !important; /* Поля для печати */
+            }
+        }
+    </style>
+    """
 
-# --- CSS Стили для визуализации ---
-# Определяем стили один раз
-CSS_STYLES = """
-<style>
-.section-container {
-    border: 1px solid #eee;
-    border-radius: 5px;
-    padding: 10px;
-    margin-bottom: 15px;
-    background-color: #f9f9f9;
-}
-.section-container h4 {
-    margin-top: 0;
-    margin-bottom: 10px;
-    color: #333;
-}
-.location-row {
-    display: flex; /* Располагаем ячейки в ряд */
-    flex-wrap: nowrap; /* Запрещаем перенос строки */
-    width: fit-content; /* Ширина по содержимому */
-    margin-left: auto; /* Центрируем ряд, если нужно */
-    margin-right: auto;
-}
-.location-cell {
-    min-width: 60px; /* Минимальная ширина ячейки */
-    padding: 15px 5px; /* Внутренние отступы (верт./гориз.) */
-    text-align: center;
-    font-weight: bold;
-    font-size: 0.9em;
-    color: #333;
-    box-sizing: border-box; /* Чтобы padding и border входили в ширину */
-    /* Общие рамки будут добавлены инлайн */
-}
-.location-cell.empty {
-    background-color: #c8e6c9; /* Светло-зеленый */
-    color: #2e7d32;
-}
-.location-cell.occupied {
-    background-color: #ffebee; /* Светло-красный */
-    color: #c62828;
-}
-.location-cell.needs-move {
-    background-color: #fff9c4; /* Светло-желтый */
-    color: #f57f17;
-    /* Можно добавить анимацию или другой индикатор */
-    /* animation: blink 1s linear infinite; */
-}
-/* @keyframes blink { 50% { opacity: 0.6; } } */
+    html_parts = [css_styles] # Начинаем с CSS
 
-.location-cell.inaccessible {
-    background-color: #e0e0e0; /* Серый */
-    color: #757575;
-    text-decoration: line-through; /* Перечеркнутый текст */
-}
-.legend {
-    margin-top: 20px;
-    padding: 10px;
-    border: 1px dashed #ccc;
-    font-size: 0.9em;
-}
-.legend-item {
-    display: inline-block;
-    margin-right: 15px;
-}
-.legend-color {
-    display: inline-block;
-    width: 15px;
-    height: 15px;
-    margin-right: 5px;
-    vertical-align: middle;
-    border: 1px solid #999;
-}
-</style>
-"""
+    # Группируем возможности по типу
+    direct_opportunities = [opp for opp in opportunities_details if opp.get("opportunity_type") == "NonStandard_Direct"]
+    move_opportunities = [opp for opp in opportunities_details if opp.get("opportunity_type") == "NonStandard_MoveRequired"]
+
+    # 1. Вывод возможностей "Можно поставить OD RAZU"
+    if direct_opportunities:
+        html_parts.append("<h2>Można postawić OD RAZU:</h2>")
+        for opp in direct_opportunities:
+            html_parts.append('<div class="opportunity-box">')
+            # Собираем ID локаций для заголовка (например, F.A1.0 - F.A2.0)
+            loc_ids = sorted([loc["id"] for loc in opp["locations"]])
+            title_range = f"{loc_ids[0]} - {loc_ids[-1]}" if len(loc_ids) > 1 else loc_ids[0]
+            html_parts.append(f'<div class="opportunity-title">Para miejsc: {title_range}</div>')
+            html_parts.append('<div class="location-row">')
+            # Отображаем все ячейки секции
+            for loc in opp["locations"]:
+                # Все ячейки в этой возможности должны быть пустыми
+                cell_class = "location-cell empty-cell"
+                html_parts.append(f'<div class="{cell_class}">')
+                html_parts.append(f'<span class="location-id">{loc["id"]}</span>')
+                html_parts.append('</div>') # end location-cell
+            html_parts.append('</div>') # end location-row
+            html_parts.append('</div>') # end opportunity-box
+
+    # 2. Вывод возможностей "Można postawić PO PRZESUNIĘCIU"
+    if move_opportunities:
+        html_parts.append("<h2>Można postawić PO PRZESUNIĘCIU:</h2>")
+        for opp in move_opportunities:
+            html_parts.append('<div class="opportunity-box">')
+            loc_ids = sorted([loc["id"] for loc in opp["locations"]])
+            title_range = f"{loc_ids[0]} - {loc_ids[-1]}" if len(loc_ids) > 1 else loc_ids[0]
+            move_from_pos = opp.get("move_required_from_pos")
+            move_from_id = opp.get("move_required_from_id", "NIEZNANA")
+            html_parts.append(f'<div class="opportunity-title">Zwolnij miejsce w: {title_range}</div>')
+            html_parts.append('<div class="location-row">')
+            # Отображаем все ячейки секции
+            for loc in opp["locations"]:
+                cell_class = "location-cell"
+                note_html = ""
+                if loc["position"] == move_from_pos:
+                    cell_class += " occupied-cell" # Ячейка, которую нужно освободить
+                    note_html = f'<div class="cell-note">(Przesuń paletę z {loc["id"]})</div>'
+                else:
+                    # Остальные должны быть пустыми в этом сценарии
+                    cell_class += " empty-cell"
+
+                html_parts.append(f'<div class="{cell_class}">')
+                html_parts.append(f'<span class="location-id">{loc["id"]}</span>')
+                html_parts.append(note_html) # Добавляем примечание, если есть
+                html_parts.append('</div>') # end location-cell
+            html_parts.append('</div>') # end location-row
+            html_parts.append('</div>') # end opportunity-box
+
+    # Если не было найдено ни одного типа возможностей
+    if not direct_opportunities and not move_opportunities:
+         html_parts.append("<h3>Nie znaleziono obecnie miejsc dla palet niestandardowych.</h3>")
+
+
+    return "\n".join(html_parts)
+
 
 # --- Streamlit UI ---
 st.set_page_config(page_title="Wyszukiwarka Miejsc Magazynowych", layout="wide")
 st.title("Wyszukiwarka Wolnych Miejsc dla Palet Niestandardowych")
-
-# Вставляем CSS стили в начало
-st.markdown(CSS_STYLES, unsafe_allow_html=True)
 
 st.sidebar.header("1. Załaduj plik")
 
@@ -313,12 +336,12 @@ st.sidebar.info("Plik struktury magazynu (layout.json) jest ładowany automatycz
 st.sidebar.header("2. Uruchom analizę")
 run_button = st.sidebar.button("Uruchom analizę", disabled=(not uploaded_empty_loc_file))
 
-st.header("Wyniki analizy wizualnej")
-results_placeholder = st.empty() # Используем для вывода HTML секций
+st.header("Wyniki analizy")
+results_placeholder = st.empty() # Используем empty для возможности замены контента
 results_placeholder.info("Załaduj plik pustych lokalizacji i kliknij 'Uruchom analizę'.")
 
 # --- Логика выполнения при нажатии кнопки ---
-analysis_performed = False # Флаг, что анализ был выполнен
+analysis_run_success = False # Флаг для показа кнопки печати
 
 if run_button:
     results_placeholder.info("Wczytywanie struktury magazynu...")
@@ -333,57 +356,31 @@ if run_button:
         if empty_locations is not None:
             results_placeholder.info("Wykonywanie analizy...")
             try:
-                # ИЗМЕНЕНО: Получаем словарь секций
-                relevant_sections_data = analyze_opportunities_internal(layout_data, empty_locations)
-
-                # Очищаем плейсхолдер перед выводом новых результатов
-                results_placeholder.empty()
-
-                if not relevant_sections_data:
-                    results_placeholder.warning("Nie znaleziono sekcji z możliwościami dla palet niestandardowych.")
-                else:
-                    analysis_performed = True # Анализ успешен и есть результаты
-                    # Выводим легенду
-                    st.markdown("""
-                    <div class="legend">
-                        <b>Legenda:</b>
-                        <span class="legend-item"><span class="legend-color" style="background-color: #c8e6c9;"></span> Wolne</span>
-                        <span class="legend-item"><span class="legend-color" style="background-color: #ffebee;"></span> Zajęte</span>
-                        <span class="legend-item"><span class="legend-color" style="background-color: #fff9c4;"></span> 🚚 Do przesunięcia</span>
-                        <span class="legend-item"><span class="legend-color" style="background-color: #e0e0e0; text-decoration: line-through;"></span> Niedostępne</span>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    # Итерируем и выводим каждую секцию визуально
-                    # Сортируем секции по ID для консистентного вывода
-                    sorted_section_ids = sorted(relevant_sections_data.keys())
-                    for section_id in sorted_section_ids:
-                        section_html = format_section_visually(section_id, relevant_sections_data[section_id])
-                        st.markdown(section_html, unsafe_allow_html=True)
+                # ИЗМЕНЕНО: Получаем детальные данные
+                opportunities_details = analyze_opportunities_internal(layout_data, empty_locations)
+                # ИЗМЕНЕНО: Генерируем HTML для визуализации
+                analysis_results_html = format_opportunities_visual(opportunities_details)
+                # ИЗМЕНЕНО: Отображаем HTML
+                results_placeholder.markdown(analysis_results_html, unsafe_allow_html=True)
+                analysis_run_success = True # Анализ прошел успешно
 
             except Exception as e:
                 st.error(f"Błąd podczas wykonywania analizy: {e}")
                 results_placeholder.error(f"Wystąpił błąd podczas analizy. Szczegóły: {e}")
-                traceback.print_exc() # Выводим traceback в лог Streamlit для отладки
+                analysis_run_success = False
 
         else:
             results_placeholder.warning("Analiza nie może zostać wykonana (błąd odczytu pliku pustych lokalizacji).")
+            analysis_run_success = False
 
 # --- Кнопка Печати ---
-# Показываем кнопку только если анализ был выполнен и были найдены секции
-if analysis_performed:
+# Показываем кнопку только если анализ прошел успешно и есть что печатать
+if analysis_run_success:
     st.sidebar.header("3. Drukuj")
     print_button_html = """
     <style>
-    .print-button { /* Стили кнопки */ }
-    /* ... (скопируйте стили кнопки из предыдущего ответа) ... */
-     .print-button {
-        display: inline-block; padding: 0.5em 1em; border: 1px solid #ccc;
-        border-radius: 4px; background-color: #f0f0f0; color: #333;
-        text-align: center; text-decoration: none; cursor: pointer;
-        font-size: 1em; font-family: inherit; width: 100%; /* Растянем на всю ширину сайдбара */
-        margin-top: 10px;
-    }
+    /* Стили для кнопки печати (можно вынести в общий CSS выше) */
+    .print-button { display: inline-block; padding: 0.5em 1em; border: 1px solid #ccc; border-radius: 4px; background-color: #f0f0f0; color: #333; text-align: center; text-decoration: none; cursor: pointer; font-size: 1em; font-family: inherit; }
     .print-button:hover { background-color: #e0e0e0; }
     .print-button:active { background-color: #d0d0d0; }
     </style>
